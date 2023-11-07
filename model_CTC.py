@@ -1,19 +1,19 @@
-import os
-import numpy as np
-import matplotlib as plt
-import pandas as pd
-import cv2
 
-import tensorflow as tf
+import os
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+from sklearn.model_selection import train_test_split
+import tensorflow as tf 
 from tensorflow import keras
 from keras import layers
-from pathlib import Path
-from collections import Counter
 
 # Data directory
 
-input_directory = Path('/Users/anishravuri/Desktop/Junior Year/Semester 1/DATS 4001/captcha_dataset/samples')
-
+input_directory = Path('./captcha_dataset/samples')
 
 # Load data
 
@@ -24,24 +24,66 @@ characters = sorted(list(set(char for label in labels for char in label)))
 
 print(characters)
 
+# Split data into training set and remaining data
+
+X_train, X_rem, y_train, y_rem = train_test_split(images, labels, train_size=0.8, random_state= 42)
+
+# Split remaining data into validation and test sets
+
+X_valid, X_test, y_valid, y_test = train_test_split(X_rem, y_rem, test_size = 0.5, random_state=42)
 
 # Initialize parameters
 
-
-batch_size = 16
+batch_size = 1
 img_width = 200
 img_height = 50
 downsample = 4
 
-# Function to map characters in labels to integers
+# Character map from characters to integers
 
 char_to_num = layers.StringLookup(vocabulary=list(characters), mask_token=None)
 
-# Inverse of mapping function, returning mapped integers to characters
+# Character map from integers to characters
 
 num_to_char = layers.StringLookup(vocabulary=char_to_num.get_vocabulary(), mask_token=None, invert=True)
 
-# Split data into training, validation, and test data.
+# Create data dictionary for neural network inputs
+
+def encode_single_sample(img_path, label):
+   
+    img = tf.io.read_file(img_path)
+    img = tf.io.decode_png(img, channels=1)
+    img = tf.image.convert_image_dtype(img, tf.float32)
+    img = tf.image.resize(img, [img_height, img_width])
+    img = tf.transpose(img, perm=[1, 0, 2])
+    label = char_to_num(tf.strings.unicode_split(label, input_encoding="UTF-8"))
+
+    return {"image": img, "label": label}
+
+# Create Data set objects (found this code online, may try to recreate in pandas)
+
+train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+train_dataset = (
+    train_dataset.map(
+        encode_single_sample, num_parallel_calls=tf.data.AUTOTUNE
+    )
+    .batch(batch_size)
+    .prefetch(buffer_size=tf.data.AUTOTUNE)
+)
+
+validation_dataset = tf.data.Dataset.from_tensor_slices((X_valid, y_valid))
+validation_dataset = (
+    validation_dataset.map(
+        encode_single_sample, num_parallel_calls=tf.data.AUTOTUNE
+    )
+    .batch(batch_size)
+    .prefetch(buffer_size=tf.data.AUTOTUNE)
+)
+
+
+# Visualize data
+
+
 
 # Creating CTC Loss Layer
 
@@ -63,8 +105,7 @@ class CTCLayer(layers.Layer):
 
     
         return y_pred
-
-
+    
 # Build Model
 
 def build_model():
@@ -99,7 +140,10 @@ def build_model():
 
     # Reshaping and Dense Layers
 
-
+    new_shape = ((img_width // 4), (img_height // 4) * 64)
+    x = layers.Reshape(target_shape=new_shape, name="reshape")(x)
+    x = layers.Dense(64, activation="relu", name="dense1")(x)
+    x = layers.Dropout(0.2)(x)
 
 
     # RNNs
@@ -115,7 +159,49 @@ def build_model():
     )(x)
 
     # Add CTC layer for calculating CTC loss at each step
+    
     output = CTCLayer(name="ctc_loss")(labels, x)
+
+    # Define Model
+
+    model = keras.models.Model(
+    inputs=[input_img, labels], outputs=output, name="captcha_reader_v1"
+    )
+     
+    # Add optimizer 
+    
+    opt = keras.optimizers.Adam()
+
+    
+    # Compile and return model
+    
+    model.compile(optimizer=opt)
+    return model
+
+# Get and summarize model
+
+model = build_model()
+model.summary()
+
+## Training the model
+
+epochs = 100
+early_stopping_patience = 10
+
+# Add early stopping to model
+early_stopping = keras.callbacks.EarlyStopping(
+    monitor="val_loss", patience=early_stopping_patience, restore_best_weights=True
+)
+
+# Train model
+
+history = model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs = epochs,
+    callbacks = [early_stopping],
+)
+
 
 
 
